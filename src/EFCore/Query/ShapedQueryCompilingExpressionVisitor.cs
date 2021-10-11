@@ -8,6 +8,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore.ChangeTracking.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -322,6 +323,9 @@ namespace Microsoft.EntityFrameworkCore.Query
                 = typeof(QueryContext).GetRequiredMethod(
                     nameof(QueryContext.StartTracking), typeof(IEntityType), typeof(object), typeof(ValueBuffer));
 
+            private static readonly MethodInfo _createNullKeyValueInNoTrackingQuery
+                = typeof(EntityMaterializerInjectingExpressionVisitor).GetRequiredDeclaredMethod(nameof(CreateNullKeyValueInNoTrackingQuery));
+
             private readonly IEntityMaterializerSource _entityMaterializerSource;
             private readonly QueryTrackingBehavior _queryTrackingBehavior;
             private readonly bool _queryStateMananger;
@@ -456,16 +460,38 @@ namespace Microsoft.EntityFrameworkCore.Query
                 {
                     if (primaryKey != null)
                     {
-                        expressions.Add(
-                            Expression.IfThen(
+                        var keyValuesVariable = Expression.Variable(typeof(object[]), "keyValues" + _currentEntityIndex);
+                        variables.Add(keyValuesVariable);
+                        expressions.Add(Expression.Assign(
+                            keyValuesVariable,
+                            Expression.NewArrayInit(
+                                typeof(object),
                                 primaryKey.Properties.Select(
-                                        p => Expression.NotEqual(
-                                            valueBufferExpression.CreateValueBufferReadValueExpression(typeof(object), p.GetIndex(), p),
-                                            Expression.Constant(null)))
-                                    .Aggregate((a, b) => Expression.AndAlso(a, b)),
-                                MaterializeEntity(
-                                    entityShaperExpression, materializationContextVariable, concreteEntityTypeVariable, instanceVariable,
-                                    null)));
+                                    p => valueBufferExpression.CreateValueBufferReadValueExpression(typeof(object), p.GetIndex(), p)))));
+                        var keyPropertiesCondition = primaryKey.Properties.Select(
+                            (p, i) => Expression.NotEqual(
+                                Expression.ArrayIndex(keyValuesVariable, Expression.Constant(i)),
+                                Expression.Constant(null)))
+                            .Aggregate((a, b) => Expression.AndAlso(a, b));
+
+                        var entityMaterializationCode = MaterializeEntity(
+                            entityShaperExpression, materializationContextVariable, concreteEntityTypeVariable, instanceVariable, null);
+
+                        if (entityShaperExpression.IsNullable)
+                        {
+                            expressions.Add(Expression.IfThen(keyPropertiesCondition, entityMaterializationCode));
+                        }
+                        else
+                        {
+                            expressions.Add(Expression.IfThenElse(
+                                keyPropertiesCondition,
+                                entityMaterializationCode,
+                                Expression.Call(
+                                    _createNullKeyValueInNoTrackingQuery,
+                                    Expression.Constant(entityType),
+                                    Expression.Constant(primaryKey.Properties),
+                                    keyValuesVariable)));
+                        }
                     }
                     else
                     {
@@ -602,6 +628,26 @@ namespace Microsoft.EntityFrameworkCore.Query
                 blockExpressions.Add(materializer);
 
                 return Expression.Block(blockExpressions);
+            }
+
+            [UsedImplicitly]
+            private static Exception CreateNullKeyValueInNoTrackingQuery(
+                IEntityType entityType, IReadOnlyList<IProperty> properties, object?[] keyValues)
+            {
+                var index = -1;
+                for (var i = 0; i < keyValues.Length; i++)
+                {
+                    if (keyValues[i] == null)
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+
+                var property = properties[index];
+
+                throw new InvalidOperationException(
+                    CoreStrings.InvalidKeyValue(entityType.DisplayName(), property.Name));
             }
         }
     }
