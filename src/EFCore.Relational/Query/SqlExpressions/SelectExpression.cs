@@ -3550,6 +3550,7 @@ namespace Microsoft.EntityFrameworkCore.Query.SqlExpressions
                 alias, projections.ToList(), tables.ToList(), newTableReferences, groupBy.ToList(), orderings.ToList())
             {
                 _projectionMapping = projectionMapping,
+                _clientProjections = _clientProjections.ToList(),
                 Predicate = predicate,
                 Having = having,
                 Offset = offset,

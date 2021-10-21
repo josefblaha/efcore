@@ -54,8 +54,13 @@ namespace Microsoft.EntityFrameworkCore.Query.Internal
 
         private Expression VisitShapedQueryExpression(ShapedQueryExpression shapedQueryExpression)
         {
-            return shapedQueryExpression.Update(
-                Visit(shapedQueryExpression.QueryExpression), shapedQueryExpression.ShaperExpression);
+            var selectExpression = shapedQueryExpression.QueryExpression;
+            var updatedSelectExpression = Visit(selectExpression);
+            return updatedSelectExpression != selectExpression
+                ? shapedQueryExpression.Update(updatedSelectExpression,
+                    ReplacingExpressionVisitor.Replace(
+                        selectExpression, updatedSelectExpression, shapedQueryExpression.ShaperExpression))
+                : shapedQueryExpression;
         }
 
         private Expression VisitCase(CaseExpression caseExpression)
